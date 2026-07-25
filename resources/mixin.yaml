@@ -1,58 +1,144 @@
+###############################################################################
+# 团队统一 Mixin 配置模板
+#
+# 这套配置做了什么：
+#   - Claude / Anthropic 全家 + WebRTC(STUN/TURN) 强制走家宽链式出口，防 IP 泄漏
+#   - DNS 全走 DoH 且强制经家宽出口，关 IPv6，防 DNS / v6 泄漏
+#   - Airport-Auto(url-test) 自动选最快的机场节点做链式代理的入口，换订阅零改动
+#   - inject-all 把链式节点自动注入订阅里所有手动选择组，面板上随时可选
+#
+# 安装后必做：
+#   1. clashmixin -e 打开本文件，填写下面「家宽链式出口」的 server / port /
+#      username / password —— 这是每个人自己的凭据，⚠️ 不要提交回仓库
+#   2. 保存退出即自动重启生效
+#   3. 验证出口 IP：clashon && curl -s https://api64.ipify.org
+#
+# 换订阅后自查一次 DNS 有没有被订阅自带的 nameserver-policy 污染（订阅的
+# "表型" key 在合并时会存活）：
+#   clashmixin -r | ~/clashctl/bin/yq '.dns'
+###############################################################################
+
 _custom:
   system-proxy:
     enable: true
 
+# ===== 基础 =====
 mixed-port: 7890
-
 external-controller: "0.0.0.0:9090"
 external-ui: dist
 external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
-secret:
+secret: "" # 安装时会自动生成随机密钥，用 clashsecret 查看
+allow-lan: false
+ipv6: false # 全局关 IPv6，防 v6 泄漏
 
-allow-lan: false # 若开启务必设置用户验证以防暴露公网后被滥用
-# authentication:
-  # - "username:password" # 用户验证（clashon 会自动填充）
-
-# prefix：前置插入
-# suffix：后置插入
-# override：根据 name 匹配并替换原项
-# inject (仅 proxy-groups)：按 name 匹配，把指定 proxy 追加到已有 group 的 .proxies 列表（自动去重）
-# inject-all (仅 proxy-groups)：把指定 proxy 追加到所有手动选择组（type: select），换订阅无需改配置
-# inject-all-exclude (仅 proxy-groups)：组名正则，命中的组不参与 inject-all
+# ===== 规则 =====
+# prefix 前置（最高优先级） / suffix 后置 / override 按 name 替换
 rules:
   prefix:
-    - DOMAIN,api64.ipify.org,DIRECT # 用于 clashui 获取真实公网 IP
-    # - DOMAIN-KEYWORD,github,proxy   # 用于 clashupgrade 升级内核
+    # --- 工具 / 直连 ---
+    - DOMAIN,api64.ipify.org,DIRECT # clashui 获取真实公网 IP
+    - DOMAIN-SUFFIX,feishu.cn,DIRECT
+    - DOMAIN-SUFFIX,larksuite.com,DIRECT
+    - DOMAIN-SUFFIX,feishucdn.com,DIRECT
+    - DOMAIN-SUFFIX,feishu.net,DIRECT
+    - DOMAIN-SUFFIX,larkoffice.com,DIRECT
+    - DOMAIN-SUFFIX,larksuitecdn.com,DIRECT
+    # --- Claude 全家走家宽 ---
+    - "DOMAIN-SUFFIX,anthropic.com,Claude-家宽"
+    - "DOMAIN-SUFFIX,claude.ai,Claude-家宽"
+    - "DOMAIN-SUFFIX,claude.com,Claude-家宽"
+    - "DOMAIN-SUFFIX,clau.de,Claude-家宽"
+    - "DOMAIN-SUFFIX,claudemcpclient.com,Claude-家宽"
+    - "DOMAIN-SUFFIX,claudemcpcontent.com,Claude-家宽"
+    - "DOMAIN-SUFFIX,claudeusercontent.com,Claude-家宽"
+    - "DOMAIN,servd-anthropic-website.b-cdn.net,Claude-家宽"
+    - "DOMAIN,anthropic.com.cdn.cloudflare.net,Claude-家宽"
+    - "DOMAIN,anthropic.auth0.com,Claude-家宽"
+    - "DOMAIN,anthropic-com.ghost.io,Claude-家宽"
+    - "DOMAIN-SUFFIX,sentry.io,Claude-家宽"
+    - "DOMAIN-SUFFIX,statsigapi.net,Claude-家宽"
+    - "DOMAIN,browser-intake-us5-datadoghq.com,Claude-家宽"
+    - "DOMAIN-KEYWORD,datadog,Claude-家宽"
+    - "DOMAIN-KEYWORD,sift,Claude-家宽"
+    - "DOMAIN-SUFFIX,intercom.io,Claude-家宽"
+    - "DOMAIN-SUFFIX,intercomcdn.com,Claude-家宽"
+    - "DOMAIN,cdn.usefathom.com,Claude-家宽"
+    - "IP-CIDR,160.79.104.0/21,Claude-家宽,no-resolve"
+    - "IP-CIDR6,2607:6bc0::/32,Claude-家宽,no-resolve"
+    - "IP-ASN,399358,Claude-家宽,no-resolve"
+    # --- WebRTC / STUN / TURN 防泄漏 ---
+    - "DOMAIN-KEYWORD,stun,Claude-家宽"
+    - "DOMAIN-KEYWORD,turn,Claude-家宽"
+    - "DOMAIN-SUFFIX,relay.metered.ca,Claude-家宽"
+    - "DOMAIN-SUFFIX,xirsys.com,Claude-家宽"
   suffix:
 
+# ===== 节点 =====
 proxies:
   prefix:
+    # --- 家宽链式出口：dialer-proxy 指向「入口」组（默认自动测速，也可面板手动钉死）---
+    # ⚠️ 下面 4 行是每人自己的凭据，安装后 clashmixin -e 填写，填完不要提交回仓库。
+    #    不填就是连本机 1080，Claude 流量会直接失败（fail closed，不会裸奔出去）。
+    - name: "家宽-01-链式代理"
+      type: socks5
+      server: "127.0.0.1" # ← 替换：家宽服务器地址
+      port: 1080 # ← 替换：端口
+      username: "REPLACE_ME" # ← 替换：用户名
+      password: "REPLACE_ME" # ← 替换：密码
+      udp: true
+      dialer-proxy: "入口"
   suffix:
   override:
 
+# ===== 策略组 =====
 proxy-groups:
   prefix:
+    # Airport-Auto：自动按测速选最快的机场节点（url-test，不可手动选）。
+    # include-all 自动纳入"当前订阅"全部节点；exclude-filter 必须排除我们自己
+    # 注入的节点（家宽 / 链式），否则家宽的 dialer 可能选到自己 → 成环。
+    - name: "Airport-Auto"
+      type: url-test
+      include-all: true
+      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|订阅|套餐|GB|Days|expire|distance"
+      url: http://www.gstatic.com/generate_204
+      interval: 300
+      tolerance: 50
+    # 入口：家宽 dialer 实际指向的组。第一项 Airport-Auto = 默认走自动测速；
+    # include-all 把订阅里每个具体节点也铺进来，可在面板手动钉死某个入口。
+    - name: "入口"
+      type: select
+      proxies:
+        - "Airport-Auto"
+      include-all: true
+      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|订阅|套餐|GB|Days|expire|distance"
+    # Claude 专用出口组：有多个家宽时在这里手动切
+    - name: "Claude-家宽"
+      type: select
+      proxies:
+        - "家宽-01-链式代理"
   suffix:
   override:
-  # inject 示例：把自定义的 "我的链式代理" 注入到订阅的 "♻️ 手动切换" 组里
-  # 这样无需 override 整组就能在 dashboard 上选中它
+  # inject-all：把链式节点自动塞进订阅自带的所有「手动选择组」(type: select)，
+  # 不用硬编码组名 → 换订阅零改动。上面 prefix 里自建的组（Airport-Auto / 入口 /
+  # Claude-家宽）不参与注入，避免链式节点被注入到自己的入口组而成环。
+  # 自动测速组（url-test / fallback / load-balance）也不会被注入，家宽不会被自动选中。
+  inject-all:
+    - "家宽-01-链式代理"
+    - "Airport-Auto"
+  # 不想污染广告拦截 / 国内直连这类功能组的话，取消下面注释按组名正则排除：
+  # inject-all-exclude: "(?i)拦截广告|广告|国内网站|直连|漏网之鱼"
+  # inject：按组名精确注入，与 inject-all 可并存（此处已被 inject-all 覆盖，留作示例）
   # inject:
-  #   "♻️ 手动切换":
-  #     - "我的链式代理"
-  # inject-all 示例：注入到订阅里所有手动选择组（type: select），不必逐个写组名
-  # 注意：仅作用于订阅自带的组；上面 prefix/suffix 里自建的组不会被注入，
-  # 避免链式节点被注入到自己的入口组而成环
-  # inject-all:
-  #   - "我的链式代理"
-  # inject-all-exclude: "(?i)拦截广告|国内网站|直连"
+  #   "🔰 选择节点":
+  #     - "家宽-01-链式代理"
 
-# tun 配置
+# ===== Tun =====
 tun:
   enable: false
   stack: system
   auto-route: true
   auto-redir: true # clash
-  auto-redirect: true # mihomo
+  auto-redirect: false # mihomo
   auto-detect-interface: true
   dns-hijack:
     - any:53
@@ -63,13 +149,60 @@ tun:
     - 127.0.0.1/32
   exclude-interface:
     - docker0 # 避免无法访问容器内服务
-    - podman0 # 详见：https://github.com/nelvko/clash-for-linux-install/issues/100#issuecomment-2995667368
+    - podman0
 
-# DNS 配置
+# ===== DNS 防泄漏 =====
 dns:
   enable: true
+  ipv6: false
   listen: 0.0.0.0:1053
   enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "+.lan"
+    - "+.local"
+    - "time.*.com"
+    - "ntp.*.com"
+    - "+.msftncsi.com"
+    - "+.msftconnecttest.com"
+    - "localhost.ptlogin2.qq.com"
+  # 引导：解析上游 DoH 域名用的纯 IP DNS
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  # 默认：所有海外 / 非 cn 查询都走家宽出口（#Claude-家宽 强制经该组）
   nameserver:
-    - 114.114.114.114
-    - 8.8.8.8
+    - "https://1.1.1.1/dns-query#Claude-家宽"
+    - "https://8.8.8.8/dns-query#Claude-家宽"
+  # 解析代理服务器自身域名用（避免 fake-ip 循环依赖）
+  proxy-server-nameserver:
+    - "https://dns.alidns.com/dns-query"
+    - "https://doh.pub/dns-query"
+  nameserver-policy:
+    # 国内 / 私有：国内 DoH 直连，不绕路
+    "geosite:cn,private":
+      - "https://dns.alidns.com/dns-query"
+      - "https://doh.pub/dns-query"
+    # Claude 各域名的 DoH 也强制走家宽（兜底）
+    "+.anthropic.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claude.ai":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claude.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.clau.de":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claudemcpclient.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claudemcpcontent.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claudeusercontent.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+  respect-rules: true
