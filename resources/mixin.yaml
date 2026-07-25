@@ -17,6 +17,8 @@ allow-lan: false # 若开启务必设置用户验证以防暴露公网后被滥�
 # suffix：后置插入
 # override：根据 name 匹配并替换原项
 # inject (仅 proxy-groups)：按 name 匹配，把指定 proxy 追加到已有 group 的 .proxies 列表（自动去重）
+# inject-all (仅 proxy-groups)：把指定 proxy 追加到所有手动选择组（type: select），换订阅无需改配置
+# inject-all-exclude (仅 proxy-groups)：组名正则，命中的组不参与 inject-all
 rules:
   prefix:
     - DOMAIN,api64.ipify.org,DIRECT # 用于 clashui 获取真实公网 IP
@@ -37,6 +39,12 @@ proxy-groups:
   # inject:
   #   "♻️ 手动切换":
   #     - "我的链式代理"
+  # inject-all 示例：注入到订阅里所有手动选择组（type: select），不必逐个写组名
+  # 注意：仅作用于订阅自带的组；上面 prefix/suffix 里自建的组不会被注入，
+  # 避免链式节点被注入到自己的入口组而成环
+  # inject-all:
+  #   - "我的链式代理"
+  # inject-all-exclude: "(?i)拦截广告|国内网站|直连"
 
 # tun 配置
 tun:

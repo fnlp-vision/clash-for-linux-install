@@ -250,17 +250,40 @@ _merge_config() {
 
       ########################################
       #         ProxyGroups Inject           #
-      # 把 inject 表里的 proxy 名追加到对应   #
-      # 已有 group 的 .proxies 列表（自动去重）#
-      # 用途：把自定义 / 链式代理无侵入地     #
-      # 插入到订阅自带的节点组里，避免        #
-      # override 整组的麻烦                  #
+      # inject：按组名把 proxy 追加到已有 group#
+      #   的 .proxies 列表（自动去重）        #
+      # inject-all：追加到所有手动选择组       #
+      #   （type: select），换订阅零改动      #
+      #   mixin 自己 prefix/suffix 定义的组不  #
+      #   参与，避免链式节点注入到自己的入口组 #
+      #   而成环                             #
+      # inject-all-exclude：组名正则，命中跳过 #
       ########################################
       ($mixin.proxy-groups.inject // {}) as $inj |
+      ($mixin.proxy-groups.inject-all // []) as $injAll |
+      ($mixin.proxy-groups.inject-all-exclude // "") as $injAllExclude |
+      (
+        (($mixin.proxy-groups.prefix // []) + ($mixin.proxy-groups.suffix // []))
+        | map(.name)
+      ) as $mixinNames |
       .proxy-groups[] |= (
         . as $g |
-        ($inj | .[$g.name] // []) as $extra |
-        .proxies = (.proxies + $extra | unique)
+        (
+          ($inj | .[$g.name] // []) +
+          (
+            (
+              $injAll | select(
+                ($g.type == "select") and
+                (($mixinNames | any_c(. == $g.name)) | not) and
+                (($injAllExclude == "") or (($g.name | test($injAllExclude)) | not))
+              )
+            ) // []
+          )
+        ) as $extra |
+        with(
+          select(($extra | length) > 0);
+          .proxies = ((.proxies // []) + $extra | unique)
+        )
       )
     ' "$CLASH_CONFIG_BASE" "$CLASH_CONFIG_MIXIN" >"$CLASH_CONFIG_RUNTIME"
     _valid_config "$CLASH_CONFIG_RUNTIME" || {
