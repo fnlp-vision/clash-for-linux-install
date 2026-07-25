@@ -43,6 +43,7 @@ rules:
     - DOMAIN-SUFFIX,feishu.net,DIRECT
     - DOMAIN-SUFFIX,larkoffice.com,DIRECT
     - DOMAIN-SUFFIX,larksuitecdn.com,DIRECT
+    - DOMAIN-SUFFIX,nexus.sii.shaipower.online,DIRECT # 启智平台
     # --- Claude 全家走家宽 ---
     - "DOMAIN-SUFFIX,anthropic.com,Claude-家宽"
     - "DOMAIN-SUFFIX,claude.ai,Claude-家宽"
