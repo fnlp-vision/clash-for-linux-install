@@ -530,6 +530,10 @@ function clashsub() {
         shift
         _sub_del "$@"
         ;;
+    rename)
+        shift
+        _sub_rename "$@"
+        ;;
     list | ls | '')
         shift
         _sub_list "$@"
@@ -557,6 +561,8 @@ Commands:
   add <url>       添加订阅
   ls              查看订阅
   del <id>        删除订阅
+  rename <id> <name>
+                  重命名订阅
   use <id>        使用订阅
   update [id]     更新订阅
   log             订阅日志
@@ -592,6 +598,7 @@ _sub_add() {
          .profiles = (.profiles // []) + 
          [{
            \"id\": $id,
+           \"name\": \"\",
            \"path\": \"$profile_path\",
            \"url\": \"$url\"
          }]
@@ -615,6 +622,52 @@ _sub_del() {
     "$BIN_YQ" -i "del(.profiles[] | select(.id == \"$id\"))" "$CLASH_PROFILES_META"
     _logging_sub "➖ 已删除订阅：[$id] $url"
     _okcat '🎉' "订阅已删除：[$id] $url"
+}
+_sub_rename() {
+    local id="${1:-}"
+    (($#)) && shift
+    [ -z "$id" ] && {
+        clashsub ls
+        echo -n "$(_okcat '✈️ ' '请输入要重命名的订阅 id：')"
+        read -r id
+        [ -z "$id" ] && _error_quit "订阅 id 不能为空"
+    }
+    [[ "$id" =~ ^[0-9]+$ ]] || _error_quit "订阅 id 必须为数字"
+    _get_path_by_id "$id" >/dev/null || _error_quit "订阅 id 不存在，请检查"
+
+    local name="$*"
+    [ -z "$name" ] && {
+        echo -n "$(_okcat '✈️ ' '请输入新的订阅名称：')"
+        read -r name
+    }
+    name="${name#"${name%%[![:space:]]*}"}"
+    name="${name%"${name##*[![:space:]]}"}"
+    [ -z "$name" ] && _error_quit "订阅名称不能为空"
+    [[ "$name" == *$'\n'* || "$name" == *$'\r'* ]] &&
+        _error_quit "订阅名称不能包含换行"
+
+    PROFILE_ID="$id" PROFILE_NAME="$name" "$BIN_YQ" -e '
+      [.profiles[]? | select(
+        (.id | tostring) != strenv(PROFILE_ID) and
+        (.name // "") == strenv(PROFILE_NAME)
+      )] | length > 0
+    ' "$CLASH_PROFILES_META" >/dev/null 2>&1 &&
+        _error_quit "订阅名称已存在：$name"
+
+    local old_name
+    old_name=$(_get_name_by_id "$id")
+    [ "$old_name" = "$name" ] && {
+        _okcat '😼' "订阅名称未变化：[$id] $name"
+        return 0
+    }
+
+    PROFILE_ID="$id" PROFILE_NAME="$name" "$BIN_YQ" -i '
+      (.profiles[] | select(
+        (.id | tostring) == strenv(PROFILE_ID)
+      )).name = strenv(PROFILE_NAME)
+    ' "$CLASH_PROFILES_META"
+    _logging_sub "✏️ 订阅已重命名：[$id] ${old_name:-未命名} -> $name"
+    _okcat '🎉' "订阅已重命名：[$id] $name"
 }
 _sub_list() {
     "$BIN_YQ" "$CLASH_PROFILES_META"
@@ -644,8 +697,15 @@ _get_path_by_id() {
 _get_url_by_id() {
     "$BIN_YQ" -e ".profiles[] | select(.id == \"$1\") | .url" "$CLASH_PROFILES_META" 2>/dev/null
 }
+_get_name_by_id() {
+    PROFILE_ID="$1" "$BIN_YQ" '
+      .profiles[] |
+      select((.id | tostring) == strenv(PROFILE_ID)) |
+      .name // ""
+    ' "$CLASH_PROFILES_META" 2>/dev/null
+}
 _sub_update() {
-    local arg is_convert
+    local arg is_convert=false
     for arg in "$@"; do
         case $arg in
         --auto)
