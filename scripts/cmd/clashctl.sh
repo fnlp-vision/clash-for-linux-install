@@ -558,7 +558,7 @@ Usage:
   clashsub COMMAND [OPTIONS]
 
 Commands:
-  add <url>       添加订阅
+  add '<url>'     添加订阅（链接含 & 时必须使用引号）
   ls              查看订阅
   del <id>        删除订阅
   rename <id> <name>
@@ -571,6 +571,9 @@ Options:
   update:
     --auto        配置自动更新
     --convert     使用订阅转换
+
+Examples:
+  clashsub add 'https://example.com/sub?token=xxx&app=auto'
 EOF
         ;;
     esac
@@ -588,7 +591,10 @@ _sub_add() {
     _valid_config "$CLASH_CONFIG_TEMP" || _error_quit "订阅无效，请检查：
     原始订阅：${CLASH_CONFIG_TEMP}.raw
     转换订阅：$CLASH_CONFIG_TEMP
-    转换日志：$BIN_SUBCONVERTER_LOG"
+    转换日志：$BIN_SUBCONVERTER_LOG
+
+提示：若原链接包含 &，Shell 可能已在 & 处截断链接。请使用单引号包裹完整链接：
+    clashctl sub add 'https://example.com/sub?token=xxx&app=auto'"
 
     local id=$("$BIN_YQ" '.profiles // [] | (map(.id) | max) // 0 | . + 1' "$CLASH_PROFILES_META")
     local profile_path="${CLASH_PROFILES_DIR}/${id}.yaml"

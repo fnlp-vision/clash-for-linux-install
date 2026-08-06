@@ -128,7 +128,7 @@ Usage:
   clashsub COMMAND [OPTIONS]
 
 Commands:
-  add <url>       添加订阅
+  add '<url>'     添加订阅（链接含 & 时必须使用引号）
   ls              查看订阅
   del <id>        删除订阅
   rename <id> <name>
@@ -146,7 +146,7 @@ Options:
 
 - 支持添加本地订阅，例如：`file:///root/clashctl/resources/config.yaml`
 - 可通过 `clashctl sub rename <id> "<name>"` 为订阅设置便于识别的名称；名称支持空格，请使用引号包裹。
-- 当订阅链接解析失败或包含特殊字符时，请使用引号包裹以避免被错误解析。
+- 订阅链接包含 `&` 时必须使用引号包裹，否则 Shell 会在 `&` 处截断链接。例如：`clashctl sub add 'https://example.com/sub?token=xxx&app=auto'`。
 - 自动更新任务可通过 `crontab -e` 进行修改和管理。
 
 ### `Tun` 模式
