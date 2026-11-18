@@ -4,7 +4,8 @@
 # 这套配置做了什么：
 #   - Claude / Anthropic 全家 + WebRTC(STUN/TURN) 强制走家宽链式出口，防 IP 泄漏
 #   - DNS 全走 DoH 且强制经家宽出口，关 IPv6，防 DNS / v6 泄漏
-#   - Airport-Auto(url-test) 自动选最快的机场节点做链式代理的入口，换订阅零改动
+#   - Airport-Auto(url-test) 自动选裸延迟最低的机场节点，Chain-Auto(url-test)
+#     自动选「节点 → 家宽」链式延迟最低的一级节点做链式代理入口，换订阅零改动
 #   - inject-all 把链式节点自动注入订阅里所有手动选择组，面板上随时可选
 #
 # 安装后必做：
@@ -104,8 +105,9 @@ proxy-groups:
       url: http://www.gstatic.com/generate_204
       interval: 300
       tolerance: 50
-    # 入口：家宽 dialer 实际指向的组。第一项 Airport-Auto = 默认走自动测速；
-    # include-all 把订阅里每个具体节点也铺进来，可在面板手动钉死某个入口。
+    # 入口：家宽 dialer 实际指向的组。合并时 Chain-Auto（链式测速最优）会被自动
+    # 置顶为默认项；Airport-Auto 是裸延迟最优，也可选；include-all 把订阅里每个
+    # 具体节点也铺进来，可在面板手动钉死某个入口。
     - name: "入口"
       type: select
       proxies:

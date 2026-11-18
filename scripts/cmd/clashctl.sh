@@ -186,7 +186,54 @@ function clashui() {
     printf "\n"
 }
 
+# 生成链式测速配置（chain.yaml，每次 merge 前按当前订阅重新生成）：
+#   Airport-Auto 测的是节点裸延迟，不代表「节点 → 家宽 → 目标」的链式延迟。
+#   这里以 mixin 中 dialer-proxy 指向「入口」的家宽出口为模板，为订阅里每个
+#   候选一级节点复制一条「链式测速|<节点>」代理（dialer-proxy 钉死该节点），
+#   再由 Chain-Auto(url-test) 组对整条链路测速、自动选出链式延迟最低的一级节点。
+# 注：分两步单文件 eval，规避 yq eval-all 跨文件变量上下文的异常行为。
+_gen_chain_config() {
+    [ -r "$CLASH_CONFIG_BASE" ] || {
+        echo '{proxies: [], proxy-groups: []}' >"$CLASH_CONFIG_CHAIN"
+        return
+    }
+    local params_tmp="${CLASH_CONFIG_TEMP}.chain-params"
+    # shellcheck disable=SC2016
+    "$BIN_YQ" '
+      . as $root |
+      {} |
+      .exit = (([$root.proxies.prefix[]? | select(.dialer-proxy == "入口")] | .[0] // null) | ... comments="") |
+      .auto = ([$root.proxy-groups.prefix[]? | select(.name == "Airport-Auto")] | .[0] // {})
+    ' "$CLASH_CONFIG_MIXIN" >"$params_tmp"
+    [ "$("$BIN_YQ" '.exit == null' "$params_tmp")" = true ] && {
+        echo '{proxies: [], proxy-groups: []}' >"$CLASH_CONFIG_CHAIN"
+        /usr/bin/rm -f "$params_tmp"
+        return
+    }
+    # shellcheck disable=SC2016
+    PARAMS_FILE="$params_tmp" "$BIN_YQ" '
+      . as $root |
+      load(strenv(PARAMS_FILE)) as $p |
+      ($p.exit) as $exit |
+      ($p.auto.exclude-filter // "") as $excl |
+      {} |
+      .proxies = (
+        [$root.proxies[]? | .name |
+          select(($excl == "") or (test($excl) | not)) |
+          $exit * {"name": ("链式测速|" + .), "dialer-proxy": .}]
+      ) |
+      ."proxy-groups" = (
+        [((({"url": "http://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50} *
+           ($p.auto | select($exit != null))) | del(.exclude-filter)) *
+          {"name": "Chain-Auto", "type": "url-test", "include-all": true, "filter": "^链式测速\\|"}) |
+          ... comments=""]
+      )
+    ' "$CLASH_CONFIG_BASE" >"$CLASH_CONFIG_CHAIN"
+    /usr/bin/rm -f "$params_tmp"
+}
+
 _merge_config() {
+    _gen_chain_config
     cat "$CLASH_CONFIG_RUNTIME" >"$CLASH_CONFIG_TEMP" 2>/dev/null
     # shellcheck disable=SC2016
     "$BIN_YQ" eval-all '
@@ -194,7 +241,8 @@ _merge_config() {
       #              Load Files              #
       ########################################
       select(fileIndex==0) as $config |
-      select(fileIndex==1) as $mixin |
+      select(fileIndex==1) as $chain |
+      select(fileIndex==2) as $mixin |
       
       ########################################
       #              Deep Merge              #
@@ -227,6 +275,7 @@ _merge_config() {
             ) // $configItem
           )
         ) +
+        ($chain.proxies // []) +
         ($mixin.proxies.suffix // [])
       ) |
       
@@ -245,7 +294,19 @@ _merge_config() {
             ) // $configItem
           )
         ) +
+        ($chain.proxy-groups // []) +
         ($mixin.proxy-groups.suffix // [])
+      ) |
+
+      ########################################
+      #         Chain-Auto → 入口            #
+      # 链式测速组存在时，置顶到「入口」组首   #
+      # 项作为默认一级代理（不影响手动钉死）  #
+      ########################################
+      ($chain.proxy-groups // [] | map(.name) | any_c(. == "Chain-Auto")) as $hasChainAuto |
+      .proxy-groups[] |= (
+        with(select($hasChainAuto and .name == "入口");
+          .proxies = ((["Chain-Auto"] + (.proxies // [])) | unique))
       ) |
 
       ########################################
@@ -285,7 +346,7 @@ _merge_config() {
           .proxies = ((.proxies // []) + $extra | unique)
         )
       )
-    ' "$CLASH_CONFIG_BASE" "$CLASH_CONFIG_MIXIN" >"$CLASH_CONFIG_RUNTIME"
+    ' "$CLASH_CONFIG_BASE" "$CLASH_CONFIG_CHAIN" "$CLASH_CONFIG_MIXIN" >"$CLASH_CONFIG_RUNTIME"
     _valid_config "$CLASH_CONFIG_RUNTIME" || {
         cat "$CLASH_CONFIG_TEMP" >"$CLASH_CONFIG_RUNTIME"
         _error_quit "验证失败：请检查 Mixin 配置"
