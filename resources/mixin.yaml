@@ -115,9 +115,9 @@ proxy-groups:
         - "Airport-Auto"
       include-all: true
       exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|订阅|套餐|GB|Days|expire|distance"
-    # Claude 专用出口组：合并时 Chain-Auto（链式测速最优）会被自动置顶为默认项，
-    # 即「自动链式」模式；想手动钉一级节点时，改选下面的家宽出口，再到「入口」组
-    # 钉死具体节点。有多个家宽时也可在这里直接切出口。
+    # Claude 专用出口组：合并时会自动将链式测速组置顶为默认项（单家宽时为 Chain-Auto，
+    # 多家宽时按出口拆分为「<家宽名>-Auto」并默认启用 lazy: true 避免并发打满家宽）；
+    # 想手动钉一级节点时，改选下面的家宽出口，再到「入口」组钉死具体节点。
     - name: "Claude-家宽"
       type: select
       proxies:
@@ -125,9 +125,9 @@ proxy-groups:
   suffix:
   override:
   # inject-all：把链式节点自动塞进订阅自带的所有「手动选择组」(type: select)，
-  # 不用硬编码组名 → 换订阅零改动。上面 prefix 里自建的组（Airport-Auto / 入口 /
-  # Claude-家宽）不参与注入，避免链式节点被注入到自己的入口组而成环。
-  # 自动测速组（url-test / fallback / load-balance）也不会被注入，家宽不会被自动选中。
+  # 不用硬编码组名 → 换订阅零改动。启用后合并时会自动前置已生成的链式测速组
+  # （Chain-Auto / <家宽名>-Auto）。上面 prefix 里自建的组不参与注入，避免成环；
+  # 自动测速组（url-test / fallback / load-balance）也不会被注入。
   inject-all:
     - "家宽-01-链式代理"
     - "Airport-Auto"

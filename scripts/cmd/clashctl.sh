@@ -188,9 +188,13 @@ function clashui() {
 
 # 生成链式测速配置（chain.yaml，每次 merge 前按当前订阅重新生成）：
 #   Airport-Auto 测的是节点裸延迟，不代表「节点 → 家宽 → 目标」的链式延迟。
-#   这里以 mixin 中 dialer-proxy 指向「入口」的家宽出口为模板，为订阅里每个
-#   候选一级节点复制一条「链式测速|<节点>」代理（dialer-proxy 钉死该节点），
-#   再由 Chain-Auto(url-test) 组对整条链路测速、自动选出链式延迟最低的一级节点。
+#   这里以 mixin 中所有 dialer-proxy 指向「入口」的家宽出口为模板，为订阅里每个
+#   去重后的候选一级节点复制链式测速代理（dialer-proxy 钉死该节点），再生成对应
+#   url-test 组对整条链路测速：
+#     - 单家宽出口：组名为 Chain-Auto，代理名为「链式测速|<节点>」（向后兼容）
+#     - 多家宽出口：按出口拆分为「<家宽名>-Auto」，代理名为「链式测速|<家宽名>|<节点>」，
+#       避免不同地区家宽混测导致 IP 跨国漂移；默认启用 lazy: true 减少并发探测压力。
+#   当订阅为空或过滤后无候选节点时，不生成空 url-test 组，防止校验失败。
 # 注：分两步单文件 eval，规避 yq eval-all 跨文件变量上下文的异常行为。
 _gen_chain_config() {
     [ -r "$CLASH_CONFIG_BASE" ] || {
@@ -202,10 +206,10 @@ _gen_chain_config() {
     "$BIN_YQ" '
       . as $root |
       {} |
-      .exit = (([$root.proxies.prefix[]? | select(.dialer-proxy == "入口")] | .[0] // null) | ... comments="") |
+      .exits = ([((($root.proxies.prefix // []) + ($root.proxies.suffix // []))[] | select(."dialer-proxy" == "入口")) | ... comments=""]) |
       .auto = ([$root.proxy-groups.prefix[]? | select(.name == "Airport-Auto")] | .[0] // {})
     ' "$CLASH_CONFIG_MIXIN" >"$params_tmp"
-    [ "$("$BIN_YQ" '.exit == null' "$params_tmp")" = true ] && {
+    [ "$("$BIN_YQ" '.exits | length' "$params_tmp")" -eq 0 ] && {
         echo '{proxies: [], proxy-groups: []}' >"$CLASH_CONFIG_CHAIN"
         /usr/bin/rm -f "$params_tmp"
         return
@@ -214,19 +218,43 @@ _gen_chain_config() {
     PARAMS_FILE="$params_tmp" "$BIN_YQ" '
       . as $root |
       load(strenv(PARAMS_FILE)) as $p |
-      ($p.exit) as $exit |
+      ($p.exits // []) as $exits |
+      ($exits | length) as $exitCount |
       ($p.auto.exclude-filter // "") as $excl |
+      (
+        [$root.proxies[]? | .name | select(tag == "!!str" and . != "") | select(($excl == "") or (test($excl) | not))]
+        | unique
+      ) as $nodes |
+      (([select($exitCount > 1)] | length) | tostring) as $isMulti |
+      (([select(($nodes | length) > 0)] | length) | tostring) as $hasNodes |
+      (
+        (
+          {"url": "http://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50, "lazy": true} *
+          ($p.auto | del(.name, .type, .proxies, .include-all, .exclude-filter, .filter))
+        ) | ... comments=""
+      ) as $baseGroup |
       {} |
-      .proxies = (
-        [$root.proxies[]? | .name |
-          select(($excl == "") or (test($excl) | not)) |
-          $exit * {"name": ("链式测速|" + .), "dialer-proxy": .}]
-      ) |
+      .proxies = [
+        $exits[] | . as $exit |
+        ({"0": "链式测速|", "1": ("链式测速|" + $exit.name + "|")}[$isMulti]) as $prefix |
+        $nodes[] | . as $node |
+        $exit * {"name": ($prefix + $node), "dialer-proxy": $node}
+      ] |
       ."proxy-groups" = (
-        [((({"url": "http://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50} *
-           ($p.auto | select($exit != null))) | del(.exclude-filter)) *
-          {"name": "Chain-Auto", "type": "url-test", "include-all": true, "filter": "^链式测速\\|"}) |
-          ... comments=""]
+        {
+          "0": [],
+          "1": [
+            $exits[] | . as $exit |
+            ({"0": "链式测速|", "1": ("链式测速|" + $exit.name + "|")}[$isMulti]) as $prefix |
+            ({"0": "Chain-Auto", "1": ($exit.name + "-Auto")}[$isMulti]) as $groupName |
+            ($nodes | map($prefix + .)) as $groupProxies |
+            $baseGroup * {
+              "name": $groupName,
+              "type": "url-test",
+              "proxies": $groupProxies
+            }
+          ]
+        }[$hasNodes]
       )
     ' "$CLASH_CONFIG_BASE" >"$CLASH_CONFIG_CHAIN"
     /usr/bin/rm -f "$params_tmp"
@@ -234,7 +262,7 @@ _gen_chain_config() {
 
 _merge_config() {
     _gen_chain_config
-    cat "$CLASH_CONFIG_RUNTIME" >"$CLASH_CONFIG_TEMP" 2>/dev/null
+    [ -r "$CLASH_CONFIG_RUNTIME" ] && cat "$CLASH_CONFIG_RUNTIME" >"$CLASH_CONFIG_TEMP"
     # shellcheck disable=SC2016
     "$BIN_YQ" eval-all '
       ########################################
@@ -309,10 +337,10 @@ _merge_config() {
       # 手动模式：Claude-家宽 选家宽出口，    #
       # 再在「入口」钉死具体一级节点。         #
       ########################################
-      ($chain.proxy-groups // [] | map(.name) | any_c(. == "Chain-Auto")) as $hasChainAuto |
+      ([$chain.proxy-groups[]? | .name]) as $chainAutoNames |
       .proxy-groups[] |= (
-        with(select($hasChainAuto and .name == "Claude-家宽");
-          .proxies = ((["Chain-Auto"] + (.proxies // [])) | unique))
+        with(select(($chainAutoNames | length) > 0 and .name == "Claude-家宽");
+          .proxies = (($chainAutoNames + (.proxies // [])) | unique))
       ) |
 
       ########################################
@@ -321,13 +349,14 @@ _merge_config() {
       #   的 .proxies 列表（自动去重）        #
       # inject-all：追加到所有手动选择组       #
       #   （type: select），换订阅零改动      #
-      #   mixin 自己 prefix/suffix 定义的组不  #
-      #   参与，避免链式节点注入到自己的入口组 #
-      #   而成环                             #
+      #   启用 inject-all 时会自动前置各链式   #
+      #   Auto 组（仅当实际生成时才注入）；    #
+      #   mixin 自建组不参与，避免成环。       #
       # inject-all-exclude：组名正则，命中跳过 #
       ########################################
       ($mixin.proxy-groups.inject // {}) as $inj |
-      ($mixin.proxy-groups.inject-all // []) as $injAll |
+      ($mixin.proxy-groups.inject-all // []) as $injAllRaw |
+      ({"0": [], "1": (($chainAutoNames + $injAllRaw) | unique)}[([select(($injAllRaw | length) > 0)] | length) | tostring]) as $injAll |
       ($mixin.proxy-groups.inject-all-exclude // "") as $injAllExclude |
       (
         (($mixin.proxy-groups.prefix // []) + ($mixin.proxy-groups.suffix // []))
@@ -342,6 +371,7 @@ _merge_config() {
               $injAll | select(
                 ($g.type == "select") and
                 (($mixinNames | any_c(. == $g.name)) | not) and
+                (($chainAutoNames | any_c(. == $g.name)) | not) and
                 (($injAllExclude == "") or (($g.name | test($injAllExclude)) | not))
               )
             ) // []
