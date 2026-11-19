@@ -299,13 +299,19 @@ _merge_config() {
       ) |
 
       ########################################
-      #         Chain-Auto → 入口            #
-      # 链式测速组存在时，置顶到「入口」组首   #
-      # 项作为默认一级代理（不影响手动钉死）  #
+      #       Chain-Auto → 出口选择组         #
+      # 链式测速组存在时，置顶为「Claude-家宽」 #
+      # 组默认项：链式代理本身就是完整出口，   #
+      # 自动选中链式延迟最低的一级节点。注意   #
+      # 不能放进「入口」组 —— 入口被家宽的    #
+      # dialer-proxy 引用，选到链式代理会让   #
+      # 家宽服务器回连自己（双重封装）。       #
+      # 手动模式：Claude-家宽 选家宽出口，    #
+      # 再在「入口」钉死具体一级节点。         #
       ########################################
       ($chain.proxy-groups // [] | map(.name) | any_c(. == "Chain-Auto")) as $hasChainAuto |
       .proxy-groups[] |= (
-        with(select($hasChainAuto and .name == "入口");
+        with(select($hasChainAuto and .name == "Claude-家宽");
           .proxies = ((["Chain-Auto"] + (.proxies // [])) | unique))
       ) |
 
