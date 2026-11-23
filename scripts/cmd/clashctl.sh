@@ -197,8 +197,12 @@ function clashui() {
 #   当订阅为空或过滤后无候选节点时，不生成空 url-test 组，防止校验失败。
 #   provider 型订阅（如模思）：候选节点同时取 proxy-providers[*].payload，并把这些
 #   节点复制到顶层 proxies（链式节点的 dialer-proxy 需要能按名字解析到它们）；
-#   所有 provider 都带 payload 时置 payload-inlined，merge 时 mixin 自建组的
-#   include-all 改为 include-all-proxies，避免顶层副本与 provider 原件重复列出。
+#   merge 时 mixin 自建组的 include-all 改为 include-all-proxies（顶层节点，含复制上来的
+#   payload 节点）+ use 没带 payload 的远程 provider：既不重复列出、也不漏远程节点。
+#   候选节点同时按 Airport-Auto 的 exclude-type 排除伪节点（机场常用 type: direct 塞提示信息，
+#   被当成入口就等于本机直连家宽、绕过机场）。
+#   无任何入口候选时置 entry-empty，merge 时给入口组放 REJECT：mihomo 空组会塞 COMPATIBLE，
+#   行为等同 DIRECT，家宽会从本机真实 IP 直连出去（fail-open）。
 # 注：分两步单文件 eval，规避 yq eval-all 跨文件变量上下文的异常行为。
 _gen_chain_config() {
     [ -r "$CLASH_CONFIG_BASE" ] || {
@@ -225,15 +229,18 @@ _gen_chain_config() {
       ($p.exits // []) as $exits |
       ($exits | length) as $exitCount |
       ($p.auto.exclude-filter // "") as $excl |
+      (($p.auto.exclude-type // "") | downcase | split("|") | map(select(. != ""))) as $exclTypes |
       ([$root.proxies[]? | .name]) as $inlineNames |
       (
         [$root.proxy-providers[]? | .payload[]? | select((.name | tag) == "!!str" and .name != "")]
         | unique_by(.name)
         | map(select(.name as $n | ($inlineNames | any_c(. == $n)) | not))
       ) as $payloadExtra |
-      (([$root.proxy-providers[]? | select(has("payload") | not)] | length) == 0 and ($payloadExtra | length) > 0) as $payloadInlined |
+      ([$root.proxy-providers | select(tag == "!!map") | to_entries | .[] | select(.value | has("payload") | not) | .key]) as $remoteProviders |
       (
-        [($root.proxies // []) + $payloadExtra | .[] | .name | select(tag == "!!str" and . != "") | select(($excl == "") or (test($excl) | not))]
+        [($root.proxies // []) + $payloadExtra | .[]
+          | select(((.type // "") | tostring | downcase) as $t | ($exclTypes | any_c(. == $t)) | not)
+          | .name | select(tag == "!!str" and . != "") | select(($excl == "") or (test($excl) | not))]
         | unique
       ) as $nodes |
       (([select($exitCount > 1)] | length) | tostring) as $isMulti |
@@ -241,11 +248,13 @@ _gen_chain_config() {
       (
         (
           {"url": "http://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50, "lazy": true} *
-          ($p.auto | del(.name, .type, .proxies, .include-all, .exclude-filter, .filter))
+          ($p.auto | del(.name, .type, .proxies, .include-all, .include-all-proxies, .use, .exclude-filter, .exclude-type, .filter))
         ) | ... comments=""
       ) as $baseGroup |
       {} |
-      .payload-inlined = $payloadInlined |
+      .payload-copied = true |
+      .remote-providers = $remoteProviders |
+      .entry-empty = (($nodes | length) == 0 and ($remoteProviders | length) == 0) |
       .proxies = ($payloadExtra | ... comments="") + [
         $exits[] | . as $exit |
         ({"0": "链式测速|", "1": ("链式测速|" + $exit.name + "|")}[$isMulti]) as $prefix |
@@ -396,15 +405,38 @@ _merge_config() {
       ) |
 
       ########################################
-      #  provider payload 已复制到顶层时：     #
-      #  mixin 自建组 include-all →          #
-      #  include-all-proxies，防止节点重复    #
+      #  mixin 自建的 include-all 组（入口 /  #
+      #  Airport-Auto）：                     #
+      #  1. 排除 mixin 自己的全部节点名（家宽 #
+      #     改名不含「家宽」也不会被吸进入口  #
+      #     → 防成环）                        #
+      #  2. include-all → include-all-proxies #
+      #     + use 远程 provider（payload 节点 #
+      #     已复制到顶层，避免重复、不漏远程）#
+      #  3. 无任何入口候选：放 REJECT，防空组 #
+      #     COMPATIBLE（=DIRECT）让家宽直连   #
       ########################################
+      (
+        [(($mixin.proxies.prefix // []) + ($mixin.proxies.suffix // []))[] | .name | select(tag == "!!str" and . != "")]
+        | map(sub("([\\\\.*+?^$(){}\\[\\]|])"; "\\${1}"))
+        | join("|")
+      ) as $ownProxyRe |
       .proxy-groups[] |= (
         . as $g |
         with(
-          select(($chain.payload-inlined // false) == true and ($mixinNames | any_c(. == $g.name)) and .include-all == true);
-          del(.include-all) | .include-all-proxies = true
+          select(($mixinNames | any_c(. == $g.name)) and (.include-all == true or .include-all-proxies == true));
+          with(select($ownProxyRe != ""); .exclude-filter = ((.exclude-filter // "") as $f | {"0": $ownProxyRe, "1": ($f + "|" + $ownProxyRe)}[([select($f != "")] | length) | tostring])) |
+          with(
+            select(($chain.payload-copied // false) == true);
+            del(.include-all) | .include-all-proxies = true |
+            with(select(($chain.remote-providers // []) | length > 0); .use = (((.use // []) + $chain.remote-providers) | unique))
+          ) |
+          with(
+            select(($chain.entry-empty // false) == true);
+            # exclude-type / exclude-filter 对显式 proxies 也生效，会把 REJECT 本身滤掉 → 一并删除
+            del(.include-all) | del(.include-all-proxies) | del(.use) | del(.exclude-type) | del(.exclude-filter) |
+            .proxies = (((.proxies // []) + ["REJECT"]) | unique)
+          )
         )
       ) |
 

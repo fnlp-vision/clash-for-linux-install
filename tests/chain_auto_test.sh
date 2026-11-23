@@ -67,6 +67,11 @@ assert_eq "$("$yq_bin" '.proxies | length' "$CLASH_CONFIG_CHAIN")" "0" "empty su
 assert_eq "$("$yq_bin" '.proxy-groups | length' "$CLASH_CONFIG_CHAIN")" "0" "empty sub should have 0 chain groups"
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Claude-家宽") | .proxies[0]' "$CLASH_CONFIG_RUNTIME")" "家宽-01-链式代理" "empty sub Claude-家宽 should default to manual home exit"
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "节点选择") | .proxies | any_c(. == "Chain-Auto")' "$CLASH_CONFIG_RUNTIME")" "false" "empty sub must not inject missing Chain-Auto"
+# 空入口组会被 mihomo 塞 COMPATIBLE（=DIRECT），家宽会从本机直连 → 必须显式 REJECT（fail-closed）
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Airport-Auto") | (.proxies | join(",")) + "|" + ([has("include-all"), has("include-all-proxies")] | any | tostring)' "$CLASH_CONFIG_RUNTIME")" "REJECT|false" "empty sub: Airport-Auto must fall back to REJECT"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | .proxies | join(",")' "$CLASH_CONFIG_RUNTIME")" "Airport-Auto,REJECT" "empty sub: 入口 must not be able to reach DIRECT"
+# mihomo 的 exclude-type 对显式 proxies 也生效（REJECT 的类型就是 Reject），残留的话 REJECT 会被滤掉、组又变空
+assert_eq "$("$yq_bin" '[.proxy-groups[] | select(.name == "Airport-Auto" or .name == "入口") | (has("exclude-type") or has("exclude-filter"))] | any' "$CLASH_CONFIG_RUNTIME")" "false" "empty sub: REJECT fallback groups must drop exclude-type/exclude-filter"
 
 # 2. 单家宽 + 节点过滤：生成 Chain-Auto，置顶 Claude-家宽 且注入订阅 select 组，不污染 入口
 cat >"$CLASH_CONFIG_BASE" <<'EOF'
@@ -209,18 +214,46 @@ EOF
 _merge_config
 
 assert_eq "$("$yq_bin" '[.proxies[] | select(.name | test("^链式测速\|")) | .name] | join(",")' "$CLASH_CONFIG_CHAIN")" "链式测速|订阅 · 香港,链式测速|订阅 · 日本" "provider payload nodes should become chain candidates (deduped, info nodes excluded)"
-assert_eq "$("$yq_bin" '.payload-inlined' "$CLASH_CONFIG_CHAIN")" "true" "all providers carry payload → payload-inlined"
+assert_eq "$("$yq_bin" '.remote-providers | length' "$CLASH_CONFIG_CHAIN")" "0" "all providers carry payload → no remote providers"
 assert_eq "$("$yq_bin" '[.proxies[] | select(.name == "订阅 · 日本")] | length' "$CLASH_CONFIG_RUNTIME")" "1" "payload node should be copied to top-level proxies exactly once"
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Claude-家宽") | .proxies[0]' "$CLASH_CONFIG_RUNTIME")" "Chain-Auto" "provider sub: Claude-家宽 should default to Chain-Auto"
-assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | (has("include-all") | tostring) + "," + (.include-all-proxies | tostring)' "$CLASH_CONFIG_RUNTIME")" "false,true" "provider sub with inline payload: 入口 should use include-all-proxies"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | (has("include-all") | tostring) + "," + (.include-all-proxies | tostring) + "," + (has("use") | tostring)' "$CLASH_CONFIG_RUNTIME")" "false,true,false" "provider sub with inline payload: 入口 should use include-all-proxies only"
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "日本自动") | .lazy' "$CLASH_CONFIG_RUNTIME")" "true" "subscription url-test groups should be forced lazy"
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Airport-Auto") | has("lazy")' "$CLASH_CONFIG_RUNTIME")" "false" "mixin own groups must not be forced lazy"
 assert_eq "$("$yq_bin" '[.proxy-providers[] | .health-check.lazy] | unique | join(",")' "$CLASH_CONFIG_RUNTIME")" "true" "provider health-check should be forced lazy"
 
-# 6. 混合型订阅：有 provider 不带 payload 时保留 include-all，避免漏掉远程 provider 的节点
+# 6. 混合型订阅：没带 payload 的远程 provider 用 use 单独引入，内联节点仍走 include-all-proxies（不重复、不漏）
 "$yq_bin" -i 'del(.proxy-providers["模思 · 日本"].payload)' "$CLASH_CONFIG_BASE"
 _merge_config
-assert_eq "$("$yq_bin" '.payload-inlined' "$CLASH_CONFIG_CHAIN")" "false" "remote provider without payload → not payload-inlined"
-assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | (.include-all | tostring) + "," + (has("include-all-proxies") | tostring)' "$CLASH_CONFIG_RUNTIME")" "true,false" "mixed sub: 入口 should keep include-all"
+assert_eq "$("$yq_bin" '.remote-providers | join(",")' "$CLASH_CONFIG_CHAIN")" "模思 · 日本" "remote provider without payload should be reported"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | (has("include-all") | tostring) + "," + (.include-all-proxies | tostring) + "," + (.use | join(","))' "$CLASH_CONFIG_RUNTIME")" "false,true,模思 · 日本" "mixed sub: 入口 = include-all-proxies + use remote provider"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Airport-Auto") | .use | join(",")' "$CLASH_CONFIG_RUNTIME")" "模思 · 日本" "mixed sub: Airport-Auto should use remote provider too"
+
+# 7. 伪节点过滤：type: direct 提示节点、「拉取于」时间戳、「100GB」流量提示排除；「英国 GB 01」保留；
+#    入口组带 exclude-type，Chain-Auto 不继承 exclude-type
+cp "$repo_dir/resources/mixin.yaml" "$CLASH_CONFIG_MIXIN"
+cat >"$CLASH_CONFIG_BASE" <<'EOF'
+proxies:
+  - { name: "ℹ️ E组为不优化", type: direct }
+  - { name: "拉取于->2026-11-20 11:31", type: ss, server: 8.8.8.8, port: 1, cipher: aes-128-gcm, password: x }
+  - { name: "剩余 100GB", type: ss, server: 8.8.4.4, port: 1, cipher: aes-128-gcm, password: x }
+  - { name: "英国 GB 01", type: ss, server: 1.1.1.1, port: 443, cipher: aes-128-gcm, password: x }
+proxy-groups:
+  - { name: "节点选择", type: select, proxies: ["英国 GB 01"] }
+rules:
+  - MATCH,节点选择
+EOF
+_merge_config
+assert_eq "$("$yq_bin" '[.proxy-groups[] | select(.name == "Chain-Auto") | .proxies[]] | join(",")' "$CLASH_CONFIG_RUNTIME")" "链式测速|英国 GB 01" "only real nodes should be chain candidates"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | .exclude-type' "$CLASH_CONFIG_RUNTIME")" "Direct|Dns|Reject" "入口 should exclude pseudo node types"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Chain-Auto") | has("exclude-type")' "$CLASH_CONFIG_RUNTIME")" "false" "Chain-Auto must not inherit exclude-type"
+
+# 8. 家宽改名不含「家宽」：mixin 自己的节点名（转义后）自动追加进入口 exclude-filter，不会被吸进入口而成环
+"$yq_bin" -i '(.proxies.prefix[] | select(.name == "家宽-01-链式代理") | .name) = "LA.Home(1)" | (.proxy-groups.prefix[] | select(.name == "Claude-家宽") | .proxies) = ["LA.Home(1)"] | .proxy-groups.inject-all = ["LA.Home(1)", "Airport-Auto"]' "$CLASH_CONFIG_MIXIN"
+_merge_config
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | .exclude-filter as $f | "LA.Home(1)" | test($f)' "$CLASH_CONFIG_RUNTIME")" "true" "renamed home exit must be excluded by 入口 filter"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Airport-Auto") | .exclude-filter as $f | "LA.Home(1)" | test($f)' "$CLASH_CONFIG_RUNTIME")" "true" "renamed home exit must be excluded by Airport-Auto filter"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | .exclude-filter as $f | "LAxHome1" | test($f)' "$CLASH_CONFIG_RUNTIME")" "false" "own proxy names must be regex-escaped"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | .exclude-filter as $f | "英国 GB 01" | test($f)' "$CLASH_CONFIG_RUNTIME")" "false" "real nodes must not be excluded by own-name patterns"
 
 echo "PASS: chain_auto_test"

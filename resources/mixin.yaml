@@ -109,10 +109,14 @@ proxy-groups:
     # include-all 自动纳入"当前订阅"全部节点；exclude-filter 必须排除我们自己
     # 注入的节点（家宽 / 链式），否则家宽的 dialer 可能选到自己 → 成环。
     # 「订阅」只精确匹配提示类伪节点（订阅到期 / 更新订阅…），不误伤「订阅 · 香港」这类真实节点。
+    # 流量提示只认「数字 + GB」（100GB / 50.2 GB），不误伤「英国 GB 01」；「拉取」对应「拉取于->时间」提示。
+    # exclude-type 排除 type: direct/dns/reject 的伪节点（机场常拿 direct 塞提示信息，被当成入口
+    # 就等于本机直连家宽、绕过机场）。mixin 自己的节点名合并时会自动追加进 exclude-filter。
     - name: "Airport-Auto"
       type: url-test
       include-all: true
-      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅"
+      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|拉取|\\d+(?:\\.\\d+)?\\s*GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅"
+      exclude-type: "Direct|Dns|Reject"
       url: http://www.gstatic.com/generate_204
       interval: 300
       tolerance: 50
@@ -125,7 +129,8 @@ proxy-groups:
       proxies:
         - "Airport-Auto"
       include-all: true
-      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅"
+      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|拉取|\\d+(?:\\.\\d+)?\\s*GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅"
+      exclude-type: "Direct|Dns|Reject"
     # Claude 专用出口组：合并时会自动将链式测速组置顶为默认项（单家宽时为 Chain-Auto，
     # 多家宽时按出口拆分为「<家宽名>-Auto」并默认启用 lazy: true 避免并发打满家宽）；
     # 想手动钉一级节点时，改选下面的家宽出口，再到「入口」组钉死具体节点。
