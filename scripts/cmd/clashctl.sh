@@ -195,6 +195,10 @@ function clashui() {
 #     - 多家宽出口：按出口拆分为「<家宽名>-Auto」，代理名为「链式测速|<家宽名>|<节点>」，
 #       避免不同地区家宽混测导致 IP 跨国漂移；默认启用 lazy: true 减少并发探测压力。
 #   当订阅为空或过滤后无候选节点时，不生成空 url-test 组，防止校验失败。
+#   provider 型订阅（如模思）：候选节点同时取 proxy-providers[*].payload，并把这些
+#   节点复制到顶层 proxies（链式节点的 dialer-proxy 需要能按名字解析到它们）；
+#   所有 provider 都带 payload 时置 payload-inlined，merge 时 mixin 自建组的
+#   include-all 改为 include-all-proxies，避免顶层副本与 provider 原件重复列出。
 # 注：分两步单文件 eval，规避 yq eval-all 跨文件变量上下文的异常行为。
 _gen_chain_config() {
     [ -r "$CLASH_CONFIG_BASE" ] || {
@@ -216,13 +220,20 @@ _gen_chain_config() {
     }
     # shellcheck disable=SC2016
     PARAMS_FILE="$params_tmp" "$BIN_YQ" '
-      . as $root |
+      explode(.) | . as $root |
       load(strenv(PARAMS_FILE)) as $p |
       ($p.exits // []) as $exits |
       ($exits | length) as $exitCount |
       ($p.auto.exclude-filter // "") as $excl |
+      ([$root.proxies[]? | .name]) as $inlineNames |
       (
-        [$root.proxies[]? | .name | select(tag == "!!str" and . != "") | select(($excl == "") or (test($excl) | not))]
+        [$root.proxy-providers[]? | .payload[]? | select((.name | tag) == "!!str" and .name != "")]
+        | unique_by(.name)
+        | map(select(.name as $n | ($inlineNames | any_c(. == $n)) | not))
+      ) as $payloadExtra |
+      (([$root.proxy-providers[]? | select(has("payload") | not)] | length) == 0 and ($payloadExtra | length) > 0) as $payloadInlined |
+      (
+        [($root.proxies // []) + $payloadExtra | .[] | .name | select(tag == "!!str" and . != "") | select(($excl == "") or (test($excl) | not))]
         | unique
       ) as $nodes |
       (([select($exitCount > 1)] | length) | tostring) as $isMulti |
@@ -234,7 +245,8 @@ _gen_chain_config() {
         ) | ... comments=""
       ) as $baseGroup |
       {} |
-      .proxies = [
+      .payload-inlined = $payloadInlined |
+      .proxies = ($payloadExtra | ... comments="") + [
         $exits[] | . as $exit |
         ({"0": "链式测速|", "1": ("链式测速|" + $exit.name + "|")}[$isMulti]) as $prefix |
         $nodes[] | . as $node |
@@ -381,6 +393,36 @@ _merge_config() {
           select(($extra | length) > 0);
           .proxies = ((.proxies // []) + $extra | unique)
         )
+      ) |
+
+      ########################################
+      #  provider payload 已复制到顶层时：     #
+      #  mixin 自建组 include-all →          #
+      #  include-all-proxies，防止节点重复    #
+      ########################################
+      .proxy-groups[] |= (
+        . as $g |
+        with(
+          select(($chain.payload-inlined // false) == true and ($mixinNames | any_c(. == $g.name)) and .include-all == true);
+          del(.include-all) | .include-all-proxies = true
+        )
+      ) |
+
+      ########################################
+      #  订阅自带的自动探测组 / provider 健康  #
+      #  检查统一 lazy: true，避免切换配置时   #
+      #  大量并发测速（mixin 自建组不动）      #
+      ########################################
+      .proxy-groups[] |= (
+        . as $g |
+        with(
+          select((.type == "url-test" or .type == "fallback" or .type == "load-balance") and (($mixinNames | any_c(. == $g.name)) | not) and (($chainAutoNames | any_c(. == $g.name)) | not));
+          .lazy = true
+        )
+      ) |
+      with(
+        select((.proxy-providers | tag) == "!!map");
+        .proxy-providers[] |= with(select(has("health-check")); .health-check.lazy = true)
       )
     ' "$CLASH_CONFIG_BASE" "$CLASH_CONFIG_CHAIN" "$CLASH_CONFIG_MIXIN" >"$CLASH_CONFIG_RUNTIME"
     _valid_config "$CLASH_CONFIG_RUNTIME" || {

@@ -53,6 +53,16 @@ rules:
     - "DOMAIN-SUFFIX,claudemcpclient.com,Claude-家宽"
     - "DOMAIN-SUFFIX,claudemcpcontent.com,Claude-家宽"
     - "DOMAIN-SUFFIX,claudeusercontent.com,Claude-家宽"
+    # 补齐订阅 RULE-SET ai 里有、原列表缺失的 Claude 相关域名（否则会落到订阅的 AI 组、不走家宽）
+    - "DOMAIN-SUFFIX,claude.app,Claude-家宽"
+    - "DOMAIN-SUFFIX,claude.dev,Claude-家宽"
+    - "DOMAIN-SUFFIX,claude.site,Claude-家宽"
+    - "DOMAIN-SUFFIX,claude.new,Claude-家宽"
+    - "DOMAIN-SUFFIX,claudestudio.com,Claude-家宽"
+    - "DOMAIN-SUFFIX,claudepages.dev,Claude-家宽"
+    - "DOMAIN-SUFFIX,claudeacademy.com,Claude-家宽"
+    - "DOMAIN-SUFFIX,chatbotclaude.com,Claude-家宽"
+    - "DOMAIN-SUFFIX,anthropic.team,Claude-家宽"
     - "DOMAIN,servd-anthropic-website.b-cdn.net,Claude-家宽"
     - "DOMAIN,anthropic.com.cdn.cloudflare.net,Claude-家宽"
     - "DOMAIN,anthropic.auth0.com,Claude-家宽"
@@ -98,10 +108,11 @@ proxy-groups:
     # Airport-Auto：自动按测速选最快的机场节点（url-test，不可手动选）。
     # include-all 自动纳入"当前订阅"全部节点；exclude-filter 必须排除我们自己
     # 注入的节点（家宽 / 链式），否则家宽的 dialer 可能选到自己 → 成环。
+    # 「订阅」只精确匹配提示类伪节点（订阅到期 / 更新订阅…），不误伤「订阅 · 香港」这类真实节点。
     - name: "Airport-Auto"
       type: url-test
       include-all: true
-      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|订阅|套餐|GB|Days|expire|distance"
+      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅"
       url: http://www.gstatic.com/generate_204
       interval: 300
       tolerance: 50
@@ -114,7 +125,7 @@ proxy-groups:
       proxies:
         - "Airport-Auto"
       include-all: true
-      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|订阅|套餐|GB|Days|expire|distance"
+      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅"
     # Claude 专用出口组：合并时会自动将链式测速组置顶为默认项（单家宽时为 Chain-Auto，
     # 多家宽时按出口拆分为「<家宽名>-Auto」并默认启用 lazy: true 避免并发打满家宽）；
     # 想手动钉一级节点时，改选下面的家宽出口，再到「入口」组钉死具体节点。
@@ -209,6 +220,33 @@ dns:
       - "https://1.1.1.1/dns-query#Claude-家宽"
       - "https://8.8.8.8/dns-query#Claude-家宽"
     "+.claudeusercontent.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claude.app":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claude.dev":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claude.site":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claude.new":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claudestudio.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claudepages.dev":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.claudeacademy.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.chatbotclaude.com":
+      - "https://1.1.1.1/dns-query#Claude-家宽"
+      - "https://8.8.8.8/dns-query#Claude-家宽"
+    "+.anthropic.team":
       - "https://1.1.1.1/dns-query#Claude-家宽"
       - "https://8.8.8.8/dns-query#Claude-家宽"
   respect-rules: true

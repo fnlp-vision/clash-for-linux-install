@@ -164,4 +164,63 @@ _merge_config
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "节点选择") | .proxies | any_c(. == "Chain-Auto")' "$CLASH_CONFIG_RUNTIME")" "false" "without inject-all, select group must not be modified"
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Claude-家宽") | .proxies[0]' "$CLASH_CONFIG_RUNTIME")" "Chain-Auto" "without inject-all, Claude-家宽 should still default to Chain-Auto"
 
+# 5. provider 型订阅（如模思）：节点只在 proxy-providers[*].payload 里（带 YAML 锚点、跨 provider 重复），
+#    应从 payload 生成 Chain-Auto、把节点复制到顶层供 dialer-proxy 解析，入口改用 include-all-proxies；
+#    「订阅 · 香港」这类真实节点不能被「订阅」误杀，「订阅到期」这类提示节点仍要排除；订阅自带自动组开 lazy
+cp "$repo_dir/resources/mixin.yaml" "$CLASH_CONFIG_MIXIN"
+cat >"$CLASH_CONFIG_BASE" <<'EOF'
+proxies:
+  - { name: "启智专属入口", type: ss, server: 9.9.9.9, port: 443, cipher: aes-128-gcm, password: x }
+proxy-providers:
+  "模思 · 节点选择":
+    type: http
+    url: https://example.com/sub?a
+    path: ./providers/a.yaml
+    health-check: { enable: true, url: https://www.gstatic.com/generate_204, interval: 60, lazy: false }
+    payload:
+      - &a1 { name: "订阅 · 香港", type: ss, server: 1.1.1.1, port: 443, cipher: aes-128-gcm, password: x }
+      - &a2 { name: "订阅 · 日本", type: ss, server: 2.2.2.2, port: 443, cipher: aes-128-gcm, password: x }
+      - { name: "订阅到期：2099-01-01", type: ss, server: 3.3.3.3, port: 443, cipher: aes-128-gcm, password: x }
+  "模思 · 日本":
+    type: http
+    url: https://example.com/sub?b
+    path: ./providers/b.yaml
+    health-check: { enable: true, url: https://www.gstatic.com/generate_204, interval: 60, lazy: false }
+    payload:
+      - *a2
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    use:
+      - "模思 · 节点选择"
+    proxies:
+      - DIRECT
+  - name: "日本自动"
+    type: url-test
+    use:
+      - "模思 · 日本"
+    url: https://www.gstatic.com/generate_204
+    interval: 60
+    lazy: false
+rules:
+  - MATCH,🚀 节点选择
+EOF
+
+_merge_config
+
+assert_eq "$("$yq_bin" '[.proxies[] | select(.name | test("^链式测速\|")) | .name] | join(",")' "$CLASH_CONFIG_CHAIN")" "链式测速|订阅 · 香港,链式测速|订阅 · 日本" "provider payload nodes should become chain candidates (deduped, info nodes excluded)"
+assert_eq "$("$yq_bin" '.payload-inlined' "$CLASH_CONFIG_CHAIN")" "true" "all providers carry payload → payload-inlined"
+assert_eq "$("$yq_bin" '[.proxies[] | select(.name == "订阅 · 日本")] | length' "$CLASH_CONFIG_RUNTIME")" "1" "payload node should be copied to top-level proxies exactly once"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Claude-家宽") | .proxies[0]' "$CLASH_CONFIG_RUNTIME")" "Chain-Auto" "provider sub: Claude-家宽 should default to Chain-Auto"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | (has("include-all") | tostring) + "," + (.include-all-proxies | tostring)' "$CLASH_CONFIG_RUNTIME")" "false,true" "provider sub with inline payload: 入口 should use include-all-proxies"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "日本自动") | .lazy' "$CLASH_CONFIG_RUNTIME")" "true" "subscription url-test groups should be forced lazy"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Airport-Auto") | has("lazy")' "$CLASH_CONFIG_RUNTIME")" "false" "mixin own groups must not be forced lazy"
+assert_eq "$("$yq_bin" '[.proxy-providers[] | .health-check.lazy] | unique | join(",")' "$CLASH_CONFIG_RUNTIME")" "true" "provider health-check should be forced lazy"
+
+# 6. 混合型订阅：有 provider 不带 payload 时保留 include-all，避免漏掉远程 provider 的节点
+"$yq_bin" -i 'del(.proxy-providers["模思 · 日本"].payload)' "$CLASH_CONFIG_BASE"
+_merge_config
+assert_eq "$("$yq_bin" '.payload-inlined' "$CLASH_CONFIG_CHAIN")" "false" "remote provider without payload → not payload-inlined"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | (.include-all | tostring) + "," + (has("include-all-proxies") | tostring)' "$CLASH_CONFIG_RUNTIME")" "true,false" "mixed sub: 入口 should keep include-all"
+
 echo "PASS: chain_auto_test"
