@@ -256,4 +256,46 @@ assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Airport-Auto") | .exc
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | .exclude-filter as $f | "LAxHome1" | test($f)' "$CLASH_CONFIG_RUNTIME")" "false" "own proxy names must be regex-escaped"
 assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "入口") | .exclude-filter as $f | "英国 GB 01" | test($f)' "$CLASH_CONFIG_RUNTIME")" "false" "real nodes must not be excluded by own-name patterns"
 
+# 9. 倍率节点：>1 倍的不进 Airport-Auto / Chain-Auto，0.5x / 1x / x1 保留；链式组测速超时默认 3000ms
+cp "$repo_dir/resources/mixin.yaml" "$CLASH_CONFIG_MIXIN"
+cat >"$CLASH_CONFIG_BASE" <<'EOF'
+proxies:
+  - { name: "HK-01", type: ss, server: 1.1.1.1, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "PH-01(5x)", type: ss, server: 1.1.1.2, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "HK-02 [2x]", type: ss, server: 1.1.1.3, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "JP-01 x3", type: ss, server: 1.1.1.4, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "US-01 1.5倍", type: ss, server: 1.1.1.5, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "SG-01 ×10", type: ss, server: 1.1.1.6, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "JP-02 [0.5x]", type: ss, server: 1.1.1.7, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "TW-01 1x", type: ss, server: 1.1.1.8, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "US-02 x1", type: ss, server: 1.1.1.9, port: 443, cipher: aes-128-gcm, password: x }
+  - { name: "HK-21", type: ss, server: 1.1.1.10, port: 443, cipher: aes-128-gcm, password: x }
+proxy-groups:
+  - { name: "节点选择", type: select, proxies: ["HK-01"] }
+rules:
+  - MATCH,节点选择
+EOF
+_merge_config
+assert_eq "$("$yq_bin" '[.proxy-groups[] | select(.name == "Chain-Auto") | .proxies[]] | join(",")' "$CLASH_CONFIG_RUNTIME")" "链式测速|HK-01,链式测速|JP-02 [0.5x],链式测速|TW-01 1x,链式测速|US-02 x1,链式测速|HK-21" "multiplier >1x nodes must be excluded, <=1x kept"
+assert_eq "$("$yq_bin" '.proxy-groups[] | select(.name == "Chain-Auto") | .timeout' "$CLASH_CONFIG_RUNTIME")" "3000" "Chain-Auto should default timeout to 3000ms"
+
+# 10. 冷启动预热：对 chain.yaml 的每个组调用 /group/<name>/delay，组名与 URL 正确编码
+cat >"$CLASH_CONFIG_CHAIN" <<'EOF'
+proxy-groups:
+  - { name: "加州-链式01-Auto", type: url-test, url: "http://www.gstatic.com/generate_204", timeout: 3000, proxies: [] }
+  - { name: Chain-Auto, type: url-test, proxies: [] }
+EOF
+curl_log="$test_dir/curl.log"
+curl() { printf '%s\n' "${@: -1}" >>"$curl_log"; }
+_get_secret() { echo ""; }
+_warm_chain_groups
+for _ in $(seq 1 50); do
+    [ "$(grep -c '/delay' "$curl_log" 2>/dev/null)" = 2 ] && break
+    sleep 0.1
+done
+assert_eq "$(grep '/delay' "$curl_log" | sed 's#^http://[^/]*##' | LC_ALL=C sort | tr '\n' ' ')" \
+    "/group/%E5%8A%A0%E5%B7%9E-%E9%93%BE%E5%BC%8F01-Auto/delay?url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=3000 /group/Chain-Auto/delay?url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=3000 " \
+    "warm-up should hit /delay once per chain group with encoded name/url"
+unset -f curl
+
 echo "PASS: chain_auto_test"

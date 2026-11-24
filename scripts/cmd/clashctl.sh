@@ -69,7 +69,10 @@ _detect_proxy_port() {
 
 function clashon() {
     _detect_proxy_port
-    clashstatus >&/dev/null || placeholder_start
+    clashstatus >&/dev/null || {
+        placeholder_start
+        _warm_chain_groups
+    }
     clashstatus >&/dev/null || {
         _failcat '启动失败: 执行 clashlog 查看日志'
         return 1
@@ -193,7 +196,9 @@ function clashui() {
 #   url-test 组对整条链路测速：
 #     - 单家宽出口：组名为 Chain-Auto，代理名为「链式测速|<节点>」（向后兼容）
 #     - 多家宽出口：按出口拆分为「<家宽名>-Auto」，代理名为「链式测速|<家宽名>|<节点>」，
-#       避免不同地区家宽混测导致 IP 跨国漂移；默认启用 lazy: true 减少并发探测压力。
+#       避免不同地区家宽混测导致 IP 跨国漂移；默认启用 lazy: true 减少并发探测压力，
+#       timeout: 3000 让死节点不拖长一轮测速（mihomo 默认 5000ms）。启动后由 _warm_chain_groups
+#       主动测一轮，避免冷启动期间停在列表第一个节点。
 #   当订阅为空或过滤后无候选节点时，不生成空 url-test 组，防止校验失败。
 #   provider 型订阅（如模思）：候选节点同时取 proxy-providers[*].payload，并把这些
 #   节点复制到顶层 proxies（链式节点的 dialer-proxy 需要能按名字解析到它们）；
@@ -247,7 +252,7 @@ _gen_chain_config() {
       (([select(($nodes | length) > 0)] | length) | tostring) as $hasNodes |
       (
         (
-          {"url": "http://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50, "lazy": true} *
+          {"url": "http://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50, "lazy": true, "timeout": 3000} *
           ($p.auto | del(.name, .type, .proxies, .include-all, .include-all-proxies, .use, .exclude-filter, .exclude-type, .filter))
         ) | ... comments=""
       ) as $baseGroup |
@@ -473,6 +478,55 @@ _merge_config_restart() {
     sleep 0.1
     placeholder_start >/dev/null
     sleep 0.1
+    _warm_chain_groups
+}
+
+_urlencode() {
+    local LC_ALL=C s="$1" out="" c i
+    for ((i = 0; i < ${#s}; i++)); do
+        c=${s:i:1}
+        case $c in
+        [a-zA-Z0-9.~_-]) out+=$c ;;
+        *)
+            printf -v c '%%%02X' "'$c"
+            out+=$c
+            ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# 链式组冷启动预热：mihomo 重启后不保留测速历史，url-test 在第一轮结果出来前会用列表第一个
+# 节点（实测重启后约 11s 停在列表首个「链式测速|英国1」，约 30s 才稳定到最优）。启动后在后台等
+# API 就绪，对 chain.yaml 里每个 url-test 组调一次 /group/<name>/delay：全组并发测一轮，写入同一
+# 测速 URL 的延迟历史并让组立即重新选优。失败静默，不影响启动。
+_warm_chain_groups() {
+    [ -s "$CLASH_CONFIG_CHAIN" ] || return 0
+    local groups
+    groups=$("$BIN_YQ" '.proxy-groups[]? | [.name, (.url // "http://www.gstatic.com/generate_204"), (.timeout // 3000)] | join("	")' "$CLASH_CONFIG_CHAIN" 2>/dev/null)
+    [ -n "$groups" ] || return 0
+    local ext_addr ext_ip ext_port secret
+    ext_addr=$("$BIN_YQ" '.external-controller // ""' "$CLASH_CONFIG_RUNTIME" 2>/dev/null)
+    [ -n "$ext_addr" ] || return 0
+    ext_ip=${ext_addr%:*}
+    ext_port=${ext_addr##*:}
+    case $ext_ip in '' | 0.0.0.0 | '[::]' | '::') ext_ip=127.0.0.1 ;; esac
+    secret=$(_get_secret)
+    (
+        (
+            local base="http://${ext_ip}:${ext_port}" i name url timeout
+            for ((i = 0; i < 50; i++)); do
+                curl -s --noproxy '*' --max-time 1 -o /dev/null -H "Authorization: Bearer $secret" "$base/version" && break
+                sleep 0.2
+            done
+            while IFS=$'\t' read -r name url timeout; do
+                [ -n "$name" ] || continue
+                curl -s --noproxy '*' --max-time $((timeout / 1000 + 5)) -o /dev/null \
+                    -H "Authorization: Bearer $secret" \
+                    "$base/group/$(_urlencode "$name")/delay?url=$(_urlencode "$url")&timeout=$timeout"
+            done <<<"$groups"
+        ) &
+    ) >/dev/null 2>&1
 }
 _get_secret() {
     "$BIN_YQ" '.secret // ""' "$CLASH_CONFIG_RUNTIME"

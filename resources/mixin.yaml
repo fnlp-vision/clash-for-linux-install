@@ -112,10 +112,13 @@ proxy-groups:
     # 流量提示只认「数字 + GB」（100GB / 50.2 GB），不误伤「英国 GB 01」；「拉取」对应「拉取于->时间」提示。
     # exclude-type 排除 type: direct/dns/reject 的伪节点（机场常拿 direct 塞提示信息，被当成入口
     # 就等于本机直连家宽、绕过机场）。mixin 自己的节点名合并时会自动追加进 exclude-filter。
+    # 倍率节点（5x / [2x] / x3 / 1.5倍 / 高倍 / 倍率）不进自动测速：延迟碰巧最低时会按倍率扣流量；
+    # 0.5x、1x、x1 这类不高于 1 倍的保留。Chain-Auto 的候选沿用本组 exclude-filter，一并生效；
+    # 「入口」是手动 select 组，不排除倍率节点，仍可在面板手动钉。
     - name: "Airport-Auto"
       type: url-test
       include-all: true
-      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|拉取|\\d+(?:\\.\\d+)?\\s*GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅"
+      exclude-filter: "(?i)链式|家宽|Sii|mosi|fnlp|启智|流量|剩余|到期|过期|重置|官网|套餐|拉取|\\d+(?:\\.\\d+)?\\s*GB|Days|expire|distance|订阅(?:地址|链接|到期|过期|重置|信息|官网|有效|提示)|(?:更新|官网|地址|链接)订阅|(?:^|[^\\d.])(?:[2-9]|[1-9]\\d+|1\\.\\d*[1-9])(?:\\.\\d+)?\\s*(?:[xX×]|倍)|(?:^|[^A-Za-z])[xX×]\\s*(?:[2-9]|[1-9]\\d+|1\\.\\d*[1-9])(?:\\.\\d+)?(?:$|[^\\d.])|高倍|倍率"
       exclude-type: "Direct|Dns|Reject"
       url: http://www.gstatic.com/generate_204
       interval: 300
